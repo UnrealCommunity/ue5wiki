@@ -1,0 +1,569 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>虚幻社区知识库</title>
+  
+  
+  <link href="/atom.xml" rel="self"/>
+  
+  <link href="https://ue5wiki.com/"/>
+  <updated>2022-07-20T07:47:22.659Z</updated>
+  <id>https://ue5wiki.com/</id>
+  
+  <author>
+    <name>lipengzha</name>
+    
+  </author>
+  
+  <generator uri="http://hexo.io/">Hexo</generator>
+  
+  <entry>
+    <title>UE 编译时 PCH 虚拟内存不足的错误</title>
+    <link href="https://ue5wiki.com/wiki/5cc4f8a/"/>
+    <id>https://ue5wiki.com/wiki/5cc4f8a/</id>
+    <published>2022-07-20T15:42:01.000Z</published>
+    <updated>2022-07-20T07:47:22.659Z</updated>
+    
+    <content type="html"><![CDATA[<p>在多核心 CPU 上编译 UE 时，如 Ryzen 线程撕裂者（64 核 128 线程），比较频繁的遇到以下错误：</p><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">c1xx: note: 请访问 https://aka.ms/pch-help 了解更多详情</span><br><span class="line">c1xx: fatal error C1076: 编译器限制: 达到内部堆限制</span><br><span class="line">[12/1456] Module.Renderer.17_of_18.cpp</span><br><span class="line">c1xx: error C3859: 未能创建 PCH 的虚拟内存</span><br><span class="line">c1xx: note: 系统返回代码 1455: 页面文件太小，无法完成操作。</span><br><span class="line">// english log</span><br><span class="line">2&gt;  c1xx: note: please visit https://aka.ms/pch-help for more details</span><br><span class="line">2&gt;c1xx: Error C1076 : compiler limit: internal heap limit reached</span><br><span class="line">2&gt;  [353/3017] Module.AdvancedPreviewScene.cpp</span><br><span class="line">2&gt;  [354/3017] Module.PlacementMode.cpp</span><br><span class="line">2&gt;c1xx: Error C3859 : Failed to create virtual memory for PCH</span><br><span class="line">2&gt;  c1xx: note: the system returned code 1455: The paging file is too small for this operation to complete.</span><br></pre></td></tr></table></figure><p>默认情况下，UE 会拉起系统最大线程数量的编译进程。</p><p>如我的机器就是 128 个：<br><img src="https://img.imzlp.com/imgs/zlp/picgo/2021/20220720113017.png"></p><p>UE 里每个编译任务的 <code>/zm</code> 值为 1000：<a href="https://cs.github.com/EpicGames/UnrealEngine/blob/d11782b9046e9d0b130309591e4efc57f4b8b037/Engine/Source/Programs/UnrealBuildTool/Platform/Windows/VCToolChain.cs?q=/zm#L354">VCToolChain.cs?q=%2Fzm#L354</a></p><p>表示每个 cl 进程会分配 750M 的虚拟内存：<a href="https://docs.microsoft.com/en-us/cpp/build/reference/zm-specify-precompiled-header-memory-allocation-limit?view=msvc-160">/Zm (Specify precompiled header memory allocation limit)</a></p><table><thead><tr><th align="left">Value of <em><code>factor</code></em></th><th align="left">Memory allocation limit</th></tr></thead><tbody><tr><td align="left">10</td><td align="left">7.5 MB</td></tr><tr><td align="left">100</td><td align="left">75 MB</td></tr><tr><td align="left">200</td><td align="left">150 MB</td></tr><tr><td align="left">1000</td><td align="left">750 MB</td></tr><tr><td align="left">2000</td><td align="left">1500 MB</td></tr></tbody></table><p>而系统的虚拟内存大小是有上限的：</p><p><img src="https://img.imzlp.com/imgs/zlp/picgo/2021/20220720113358.png"></p><p>如果进程数 * 每个进程的 <code>/zm</code> 大于系统的虚拟内存，会导致虚拟内存分配失败：</p><p>$TaskCount * PCHMemoryAllocationFactor &gt; SystemVirtualMemery$</p><p>也就出现了前面的问题。</p><p>解决这个问题的办法有两个：</p><ol><li>根据线程数 *750M 来设置系统的虚拟内存大小</li><li>限制并行的任务数量，避免大量的进程同时分配虚拟内存</li></ol><blockquote><p>注意：如果 <code>/zm</code> 值设置的太小，可能无法满足 UE 合并翻译单元的要求，导致编译错误，所以，最好还是修改系统虚拟内存大小或者控制并行的任务数量。</p></blockquote><p>通过编辑 <code>BuildConfiguration.xml</code> 就可以控制编译进程的 <code>/zm</code> 值，以及能够使用多少个 Task：</p><figure class="highlight xml"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot; ?&gt;</span></span><br><span class="line"><span class="tag">&lt;<span class="name">Configuration</span> <span class="attr">xmlns</span>=<span class="string">&quot;https://www.unrealengine.com/BuildConfiguration&quot;</span>&gt;</span></span><br><span class="line">    <span class="tag">&lt;<span class="name">WindowsPlatform</span>&gt;</span></span><br><span class="line">        <span class="tag">&lt;<span class="name">PCHMemoryAllocationFactor</span>&gt;</span>1000<span class="tag">&lt;/<span class="name">PCHMemoryAllocationFactor</span>&gt;</span></span><br><span class="line">    <span class="tag">&lt;/<span class="name">WindowsPlatform</span>&gt;</span></span><br><span class="line">    <span class="tag">&lt;<span class="name">LocalExecutor</span>&gt;</span></span><br><span class="line">        <span class="tag">&lt;<span class="name">MaxProcessorCount</span>&gt;</span>60<span class="tag">&lt;/<span class="name">MaxProcessorCount</span>&gt;</span></span><br><span class="line">    <span class="tag">&lt;/<span class="name">LocalExecutor</span>&gt;</span></span><br><span class="line">    <span class="tag">&lt;<span class="name">ParallelExecutor</span>&gt;</span></span><br><span class="line">        <span class="tag">&lt;<span class="name">MaxProcessorCount</span>&gt;</span>60<span class="tag">&lt;/<span class="name">MaxProcessorCount</span>&gt;</span></span><br><span class="line">    <span class="tag">&lt;/<span class="name">ParallelExecutor</span>&gt;</span></span><br><span class="line"><span class="tag">&lt;/<span class="name">Configuration</span>&gt;</span></span><br></pre></td></tr></table></figure><p>按照 128*750M 的计算，在 Ryzen3990X 上，至少要设置 <code>94G</code> 的虚拟内存，才能够满足 UE 拉起 128 个进程编译的需要。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt;在多核心 CPU 上编译 UE 时，如 Ryzen 线程撕裂者（64 核 128 线程），比较频繁的遇到以下错误：&lt;/p&gt;
+&lt;figure class=&quot;highlight plaintext&quot;&gt;&lt;table&gt;&lt;tr&gt;&lt;td class=&quot;gutter&quot;&gt;&lt;pre&gt;&lt;spa
+      
+    
+    </summary>
+    
+      <category term="BuildSystem" scheme="https://ue5wiki.com/categories/BuildSystem/"/>
+    
+    
+      <category term="BuildSystem" scheme="https://ue5wiki.com/tags/BuildSystem/"/>
+    
+      <category term="PCH" scheme="https://ue5wiki.com/tags/PCH/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>一种高效的 ZSTD Shader 字典训练方案</title>
+    <link href="https://ue5wiki.com/wiki/external1523294167/"/>
+    <id>https://ue5wiki.com/wiki/external1523294167/</id>
+    <published>2022-07-14T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://imzlp.com/posts/26943/"> 一种高效的 ZSTD Shader 字典训练方案 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://imzlp.com/posts/26943/&quot;&gt; 一种高效的 ZSTD Shader 字典训练方案 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/css/bil
+      
+    
+    </summary>
+    
+      <category term="Optimization" scheme="https://ue5wiki.com/categories/Optimization/"/>
+    
+    
+      <category term="压缩算法" scheme="https://ue5wiki.com/tags/%E5%8E%8B%E7%BC%A9%E7%AE%97%E6%B3%95/"/>
+    
+      <category term="Shader" scheme="https://ue5wiki.com/tags/Shader/"/>
+    
+      <category term="打包" scheme="https://ue5wiki.com/tags/%E6%89%93%E5%8C%85/"/>
+    
+      <category term="包体优化" scheme="https://ue5wiki.com/tags/%E5%8C%85%E4%BD%93%E4%BC%98%E5%8C%96/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220713| 周日广州见！</title>
+    <link href="https://ue5wiki.com/wiki/external1599717306/"/>
+    <id>https://ue5wiki.com/wiki/external1599717306/</id>
+    <published>2022-07-13T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/541067431"> 虚幻周报 20220713| 周日广州见！</a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/541067431&quot;&gt; 虚幻周报 20220713| 周日广州见！&lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/css
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>VS 真机调试 Android</title>
+    <link href="https://ue5wiki.com/wiki/6b9bc0ab/"/>
+    <id>https://ue5wiki.com/wiki/6b9bc0ab/</id>
+    <published>2022-07-06T16:08:01.000Z</published>
+    <updated>2022-07-20T07:47:22.659Z</updated>
+    
+    <content type="html"><![CDATA[<p>对于 UE 项目而言，绝大部分情况下，不需要关心 Apk 的构建流程，虽然 UE 在打包时会生成一个 Android Studio 的工程，但基本对于开发层而言是隔离的，UE 的构建工具会自动处理。</p><p>调试也是一样，在 UE 项目开发中，Coding 在 VS 或 Rider 等 <strong> 游戏开发环境 </strong> 中进行，直接在 VS 中进行调试也是最合适的，再去打开 Android Studio，一是工具的臃肿，二是额外的 IDE 熟悉成本。</p><p>好在，谷歌推出了 <a href="https://developer.android.com/games/agde">AGDE</a> 扩展工具（Android Game Development Extension for Visual Studio），可以直接在 VS 中调试 Android 项目，而不用使用 Android Studio。</p><p>首先，就是要下载 <a href="https://developer.android.com/games/agde">AGDE</a> 并安装。它支持 VS2017-2022（但 UE 的文档里建议使用 VS2019）。</p><h3 id="Android 环境"><a href="#Android 环境" class="headerlink" title="Android 环境"></a>Android 环境</h3><p>AGDE 对于 JDK 的要求是 JDK11+，太老的版本打开时会提示不支持。新版本的 JDK 可以从 Oracle 网站上下载：<a href="https://www.oracle.com/java/technologies/downloads/">Java Downloads</a></p><p>在系统中，添加以下环境变量：</p><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">setx JAVA_HOME &quot;%current_dir_name%\jdk-18.0.1.1&quot;</span><br><span class="line">setx ANDROID_HOME &quot;%current_dir_name%\android-sdk-windows&quot;</span><br><span class="line">setx ANDROID_SDK_ROOT &quot;%current_dir_name%\android-sdk-windows&quot;</span><br><span class="line">setx ANDROID_NDK_ROOT &quot;%current_dir_name%\%ndk_version%&quot;</span><br><span class="line">setx ANT_HOME &quot;%current_dir_name%\apache-ant-1.8.2&quot;</span><br><span class="line">setx GRADLE_HOME &quot;%current_dir_name%\%grade_version%&quot;</span><br></pre></td></tr></table></figure><p>路径可根据实际情况修改，我在 <a href="https://imzlp.com/posts/17996/">UE 开发笔记：Android 篇</a> 文章中提供了一份完整的 Andoird 环境，只需要更新 JDK 版本即可开箱即用。</p><p>安装的 ADGE 会读取环境变量中的配置，无需再在 VS 中配置 JDK/NDK/SDK 的路径。</p><h3 id="UE 侧的要求"><a href="#UE 侧的要求" class="headerlink" title="UE 侧的要求"></a>UE 侧的要求 </h3><p> 调试环境包在 <code>Project Settings</code>-<code>Package</code> 中取消勾选<code>For Distribution</code>：</p><p><img src="https://img.imzlp.com/imgs/zlp/picgo/2021/image-20220706151853395.png"></p><p>根据需要，打包为 <code>Development</code> 或<code>Debug</code>/<code>DebugGame</code>即可。</p><h3 id="VS"><a href="#VS" class="headerlink" title="VS"></a>VS</h3><p>在 VS 解决方案的 <code>Games</code> 下，添加打包出的 APK：</p><p><img src="https://img.imzlp.com/imgs/zlp/picgo/2021/image-20220706152622741.png"></p><p>会出现一个 <code>PROJECT_NAME-armv7</code> 等命名的项：</p><p><img src="https://img.imzlp.com/imgs/zlp/picgo/2021/image-20220706152853841.png"></p><p>将其设置为启动项目：</p><p><img src="https://img.imzlp.com/imgs/zlp/picgo/2021/image-20220706153039258.png"></p><p>即可在 VS 中看到设备：</p><p><img src="https://img.imzlp.com/imgs/zlp/picgo/2021/image-20220706153229942.png"></p><p>之后就可以像在 Win 上调试编辑器一样了，F5 即可安装到设备上。</p><p>设备上运行的会进程会等待调试器附加：</p><p><img src="https://img.imzlp.com/imgs/zlp/picgo/2021/image-20220706154408319.png"></p><p><img src="https://img.imzlp.com/imgs/zlp/picgo/2021/image-20220706154930415.png"></p><p>附加之后就能正确地在 VS 中进行断点了。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt;对于 UE 项目而言，绝大部分情况下，不需要关心 Apk 的构建流程，虽然 UE 在打包时会生成一个 Android Studio 的工程，但基本对于开发层而言是隔离的，UE 的构建工具会自动处理。&lt;/p&gt;
+&lt;p&gt;调试也是一样，在 UE 项目开发中，Coding 在 VS 
+      
+    
+    </summary>
+    
+      <category term="Debugging" scheme="https://ue5wiki.com/categories/Debugging/"/>
+    
+      <category term="Android" scheme="https://ue5wiki.com/categories/Debugging/Android/"/>
+    
+    
+      <category term="Debugging" scheme="https://ue5wiki.com/tags/Debugging/"/>
+    
+      <category term="Android" scheme="https://ue5wiki.com/tags/Android/"/>
+    
+      <category term="Mobile" scheme="https://ue5wiki.com/tags/Mobile/"/>
+    
+      <category term="Visual Studio" scheme="https://ue5wiki.com/tags/Visual-Studio/"/>
+    
+      <category term="VS" scheme="https://ue5wiki.com/tags/VS/"/>
+    
+      <category term="调试" scheme="https://ue5wiki.com/tags/%E8%B0%83%E8%AF%95/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220706| 周六杭州见！</title>
+    <link href="https://ue5wiki.com/wiki/external1072111182/"/>
+    <id>https://ue5wiki.com/wiki/external1072111182/</id>
+    <published>2022-07-06T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/538004938"> 虚幻周报 20220706| 周六杭州见！</a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/538004938&quot;&gt; 虚幻周报 20220706| 周六杭州见！&lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/css
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220629| 杭州我来了！</title>
+    <link href="https://ue5wiki.com/wiki/external1479577399/"/>
+    <id>https://ue5wiki.com/wiki/external1479577399/</id>
+    <published>2022-06-29T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/535320610"> 虚幻周报 20220629| 杭州我来了！</a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/535320610&quot;&gt; 虚幻周报 20220629| 杭州我来了！&lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/css
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220622| 终于要动身了</title>
+    <link href="https://ue5wiki.com/wiki/external1477030336/"/>
+    <id>https://ue5wiki.com/wiki/external1477030336/</id>
+    <published>2022-06-22T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/532231206"> 虚幻周报 20220622| 终于要动身了 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/532231206&quot;&gt; 虚幻周报 20220622| 终于要动身了 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/cs
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220615|MetaHuman 觉醒</title>
+    <link href="https://ue5wiki.com/wiki/external1071873450/"/>
+    <id>https://ue5wiki.com/wiki/external1071873450/</id>
+    <published>2022-06-15T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/529099320"> 虚幻周报 20220615|MetaHuman 觉醒 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/529099320&quot;&gt; 虚幻周报 20220615|MetaHuman 觉醒 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220608| 想要上班</title>
+    <link href="https://ue5wiki.com/wiki/external1087081153/"/>
+    <id>https://ue5wiki.com/wiki/external1087081153/</id>
+    <published>2022-06-08T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/525894036"> 虚幻周报 20220608| 想要上班 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/525894036&quot;&gt; 虚幻周报 20220608| 想要上班 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/css/
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220601| 儿童节解封快乐！</title>
+    <link href="https://ue5wiki.com/wiki/external1198190376/"/>
+    <id>https://ue5wiki.com/wiki/external1198190376/</id>
+    <published>2022-06-01T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/523005911"> 虚幻周报 20220601| 儿童节解封快乐！</a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/523005911&quot;&gt; 虚幻周报 20220601| 儿童节解封快乐！&lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/c
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220525| 应该是快了吧</title>
+    <link href="https://ue5wiki.com/wiki/external1808424953/"/>
+    <id>https://ue5wiki.com/wiki/external1808424953/</id>
+    <published>2022-05-25T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/519675285"> 虚幻周报 20220525| 应该是快了吧 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/519675285&quot;&gt; 虚幻周报 20220525| 应该是快了吧 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/cs
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻引擎中 Pak 的运行时重组方案</title>
+    <link href="https://ue5wiki.com/wiki/external1966395836/"/>
+    <id>https://ue5wiki.com/wiki/external1966395836/</id>
+    <published>2022-05-23T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://imzlp.com/posts/12188/"> 虚幻引擎中 Pak 的运行时重组方案 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://imzlp.com/posts/12188/&quot;&gt; 虚幻引擎中 Pak 的运行时重组方案 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/css/bilicard.
+      
+    
+    </summary>
+    
+      <category term="热更新" scheme="https://ue5wiki.com/categories/%E7%83%AD%E6%9B%B4%E6%96%B0/"/>
+    
+    
+      <category term="热更新" scheme="https://ue5wiki.com/tags/%E7%83%AD%E6%9B%B4%E6%96%B0/"/>
+    
+      <category term="Pak" scheme="https://ue5wiki.com/tags/Pak/"/>
+    
+      <category term="打包" scheme="https://ue5wiki.com/tags/%E6%89%93%E5%8C%85/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220518| 随缘了</title>
+    <link href="https://ue5wiki.com/wiki/external1304825165/"/>
+    <id>https://ue5wiki.com/wiki/external1304825165/</id>
+    <published>2022-05-18T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/516220151"> 虚幻周报 20220518| 随缘了 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/516220151&quot;&gt; 虚幻周报 20220518| 随缘了 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/css/b
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220511|memset(0)</title>
+    <link href="https://ue5wiki.com/wiki/external1257753656/"/>
+    <id>https://ue5wiki.com/wiki/external1257753656/</id>
+    <published>2022-05-11T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/512701706"> 虚幻周报 20220511|memset(0)</a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/512701706&quot;&gt; 虚幻周报 20220511|memset(0)&lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/c
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220427| 五一想上班</title>
+    <link href="https://ue5wiki.com/wiki/external1614146613/"/>
+    <id>https://ue5wiki.com/wiki/external1614146613/</id>
+    <published>2022-04-27T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/505959032"> 虚幻周报 20220427| 五一想上班 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/505959032&quot;&gt; 虚幻周报 20220427| 五一想上班 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/css
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220420| 有一就有二再有三</title>
+    <link href="https://ue5wiki.com/wiki/external1410975650/"/>
+    <id>https://ue5wiki.com/wiki/external1410975650/</id>
+    <published>2022-04-20T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/501783535"> 虚幻周报 20220420| 有一就有二再有三 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/501783535&quot;&gt; 虚幻周报 20220420| 有一就有二再有三 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>基于 ZSTD 字典的 Shader 压缩方案</title>
+    <link href="https://ue5wiki.com/wiki/external1560710643/"/>
+    <id>https://ue5wiki.com/wiki/external1560710643/</id>
+    <published>2022-04-17T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://imzlp.com/posts/24725/"> 基于 ZSTD 字典的 Shader 压缩方案 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://imzlp.com/posts/24725/&quot;&gt; 基于 ZSTD 字典的 Shader 压缩方案 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/css/bili
+      
+    
+    </summary>
+    
+      <category term="Optimization" scheme="https://ue5wiki.com/categories/Optimization/"/>
+    
+    
+      <category term="压缩算法" scheme="https://ue5wiki.com/tags/%E5%8E%8B%E7%BC%A9%E7%AE%97%E6%B3%95/"/>
+    
+      <category term="Shader" scheme="https://ue5wiki.com/tags/Shader/"/>
+    
+      <category term="打包" scheme="https://ue5wiki.com/tags/%E6%89%93%E5%8C%85/"/>
+    
+      <category term="包体优化" scheme="https://ue5wiki.com/tags/%E5%8C%85%E4%BD%93%E4%BC%98%E5%8C%96/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220413|55555</title>
+    <link href="https://ue5wiki.com/wiki/external1094762907/"/>
+    <id>https://ue5wiki.com/wiki/external1094762907/</id>
+    <published>2022-04-13T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/497767596"> 虚幻周报 20220413|55555</a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/497767596&quot;&gt; 虚幻周报 20220413|55555&lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/css/b
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220330| 前有珍贵的菜</title>
+    <link href="https://ue5wiki.com/wiki/external1756164514/"/>
+    <id>https://ue5wiki.com/wiki/external1756164514/</id>
+    <published>2022-03-30T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/490166688"> 虚幻周报 20220330| 前有珍贵的菜 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/490166688&quot;&gt; 虚幻周报 20220330| 前有珍贵的菜 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/cs
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>虚幻周报 20220323| 世事无常珍惜当下</title>
+    <link href="https://ue5wiki.com/wiki/external1879003355/"/>
+    <id>https://ue5wiki.com/wiki/external1879003355/</id>
+    <published>2022-03-23T00:00:00.000Z</published>
+    <updated>2022-07-20T07:47:46.891Z</updated>
+    
+    <content type="html"><![CDATA[<p> 本篇文章为外部内容，请点击链接跳转至原站点：<a href="https://zhuanlan.zhihu.com/p/486145269"> 虚幻周报 20220323| 世事无常珍惜当下 </a>。</p><link rel="stylesheet" href="/css/bilicard.css" type="text/css">]]></content>
+    
+    <summary type="html">
+    
+      
+      
+        &lt;p&gt; 本篇文章为外部内容，请点击链接跳转至原站点：&lt;a href=&quot;https://zhuanlan.zhihu.com/p/486145269&quot;&gt; 虚幻周报 20220323| 世事无常珍惜当下 &lt;/a&gt;。&lt;/p&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/
+      
+    
+    </summary>
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/categories/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+    
+      <category term="虚幻周报" scheme="https://ue5wiki.com/tags/%E8%99%9A%E5%B9%BB%E5%91%A8%E6%8A%A5/"/>
+    
+  </entry>
+  
+</feed>
